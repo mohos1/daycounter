@@ -8,22 +8,24 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from uuid import uuid4
 import logging
 class Counter:
-    def __init__(self,sendtime=None,deadline=None) -> None:
+    def __init__(self,sendtime,deadline,chatname,chattype,chatid) -> None:
         self.sendtime=sendtime
         self.deadline=deadline
-        self.id=uuid4()
-class User:
-    def __init__(self,chatid) -> None:
+        self.chatname=chatname
+        self.chattype=chattype
         self.chatid=chatid
+        self.id=str(uuid4())
+class User:
+    def __init__(self) -> None:
         self.counters={}
-    def add_counter(self,name,sendtime=None,deadline=None):
-        self.counters[name]=Counter(sendtime,deadline)
+    def add_counter(self,name,chatname,chattype,chatid,sendtime=None,deadline=None):
+        self.counters[name]=Counter(sendtime,deadline,chatname,chattype,chatid)
     def remove_counter(self,name,scheduler):
         scheduler.remove_job(str(self.counters[name].id))
-        del self.counters[name]
+        self.counters.pop(name)
     def build_counter(self,name,scheduler,bot):
         counter=self.counters[name]
-        scheduler.add_job(send_daily_message,'cron',args=[self.chatid,counter.deadline,bot],id=str(counter.id)
+        scheduler.add_job(send_daily_message,'cron',args=[counter.chatid,counter.deadline,bot],id=counter.id
                         ,hour=counter.sendtime[0],minute=counter.sendtime[1],end_date=counter.deadline)
 class Flags:
     def __init__(self) -> None:
@@ -40,53 +42,42 @@ async def send_daily_message(chatid,deadline,bot):
     message=f'{daysleft} روز مانده'
     await bot.send_message(chat_id=chatid, text=message)
 
-async def startup(app):
-    users_data=await app.persistence.get_user_data()
-    for userkey in users_data:
-        user=app.user_data[userkey]['user']
-        for counterkey in user.counters:
-            user.build_counter(counterkey,asyncscheduler,app.bot)
-    commands=[
-        BotCommand('start','شروع ربات'),
-        BotCommand('help','نمایش همه ی دستور ها'),
-        BotCommand('add','اضافه کردن شمارنده'),
-        BotCommand('remove','حذف شمارنده'),
-        BotCommand('list','نمایش تمام شمارنده ها')
-    ]
-    await app.bot.set_my_commands(commands)
-    asyncscheduler.start()
-    print("Bot started. Waiting to send messages...")
-
 async def user_init(update,context):
     chatid=update.effective_chat.id
-    context.user_data['user']=context.user_data.get('user',User(chatid))
-    context.user_data['flags']=Flags()
+    context.user_data['user']=context.user_data.get('user',User())
+    context.user_data['flags']=context.user_data.get('flags',Flags())
     await context.bot.send_message(chat_id=chatid,text='سلام به روز شمار خوش آمدید')
 
 async def help(update,context):
+    context.user_data['flags']=context.user_data.get('flags',Flags())
     commands=await context.bot.get_my_commands()
     message='دستور های قابل دسترس\n\n'
     for c in commands:
         message+=f'{c.command}  |  {c.description}\n'
     await update.message.reply_text(message)
 
-async def list_my_counters(update,context):
+async def list_counters(update,context):
+    context.user_data['user']=context.user_data.get('user',User())
+    context.user_data['flags']=context.user_data.get('flags',Flags())
     message='فهرست شمارنده ها \n\n'
     userobj=context.user_data['user']
     if userobj.counters.__len__()!=0:
         for counterkey in userobj.counters:
             counter=userobj.counters[counterkey]
-            message+=f'{counterkey}  |  {counter.sendtime[0]}:{counter.sendtime[1]}  |  {JalaliDate(counter.deadline)}\n'
+            message+=f'{counterkey}  |  {counter.sendtime[0]}:{counter.sendtime[1]}  |  {JalaliDate(counter.deadline)}  |  {counter.chattype}  |  {counter.chatname}\n'
         await update.message.reply_text(message)
     else:
         await update.message.reply_text('شمارنده ای وجود ندارد')
 
 async def add_counter_interface(update,context):
+    context.user_data['user']=context.user_data.get('user',User())
     context.user_data['flags']=Flags()
     await update.message.reply_text('لطفا نام شمارنده را وارد کنید')
     context.user_data['flags'].name=True
 
-async def manager(update,context):
+async def manager_interface(update,context):
+    context.user_data['user']=context.user_data.get('user',User())
+    context.user_data['flags']=context.user_data.get('flags',Flags())
     if context.user_data['flags'].name:
         await get_counter_name(update,context)
     elif context.user_data['flags'].deadline:
@@ -98,8 +89,9 @@ async def manager(update,context):
 
 async def get_counter_name(update,context):
     name=update.message.text
-    if not(name in context.user_data['user'].counters):
-        context.user_data['user'].add_counter(name)
+    if counter_name_validator(name,context.user_data['user'].counters):
+        chatname=update.effective_user.full_name if update.effective_chat.type=='private' else update.effective_chat.title
+        context.user_data['user'].add_counter(name,chatname=chatname,chattype=update.effective_chat.type,chatid=update.effective_chat.id)
         context.user_data['flags'].name=False
         context.user_data['flags'].deadline=True
         context.user_data['flags'].cwo=name
@@ -107,15 +99,14 @@ async def get_counter_name(update,context):
     else:
         await update.message.reply_text('لطفا نام دیگری انتخاب کنید این نام تکراری است')
 
+def counter_name_validator(name,seq):
+    return False if name in seq else True
+
 async def get_counter_deadline(update,context):
-    rawdate=[int(i) for i in update.message.text.split('/')]
-    try:
-        deadlinedate=JalaliDate(rawdate[0],rawdate[1],rawdate[2]).to_gregorian()
-    except:
-        await update.message.reply_text('لطفا یک تاریخ معتبر وارد کنید')
-        return -1
     today=datetime.datetime.date(datetime.datetime.today())
-    if (deadlinedate-today).days>0:
+    text=update.message.text
+    f,deadlinedate=date_validator(text,today)
+    if f:
         context.user_data['user'].counters[context.user_data['flags'].cwo].deadline=deadlinedate
         context.user_data['flags'].deadline=False
         context.user_data['flags'].sendtime=True
@@ -123,15 +114,20 @@ async def get_counter_deadline(update,context):
     else:
         await update.message.reply_text('لطفا یک تاریخ معتبر وارد کنید')
 
-async def get_counter_sendtime(update,context):
-    rawdata=update.message.text.split(':')
+def date_validator(text,basedate=None):
     try:
-        hour,minute=int(rawdata[0]),int(rawdata[1])
+        rawdate=[int(i) for i in text.split('/')]
+        deadlinedate=JalaliDate(rawdate[0],rawdate[1],rawdate[2]).to_gregorian()
+        if basedate:
+            return (True,deadlinedate) if (deadlinedate-basedate).days>0 else (False,None)
+        return (True,deadlinedate)
     except:
-        await update.message.reply_text('لطفا  ساعتی معتبر وارد کنید')
-        return -1
-    if 0<=hour<24 and 0<=minute<60:
-        context.user_data['user'].counters[context.user_data['flags'].cwo].sendtime=(hour,minute)
+        return (False,None)
+
+async def get_counter_sendtime(update,context):
+    f,time=time_validator(update.message.text)
+    if f:
+        context.user_data['user'].counters[context.user_data['flags'].cwo].sendtime=time
         context.user_data['flags'].sendtime=False
         context.user_data['user'].build_counter(context.user_data['flags'].cwo,asyncscheduler,application.bot)
         context.user_data['flags'].cwo=None
@@ -139,19 +135,46 @@ async def get_counter_sendtime(update,context):
     else:
         await update.message.reply_text('لطفا  ساعتی معتبر وارد کنید')
 
+def time_validator(text):
+    try:
+        time=tuple(int(i) for i in text.split(':'))
+        if 0<=time[0]<24 and 0<=time[1]<60:
+            return (True,time) 
+        return (False,None)
+    except:
+        return (False,None)
+
 async def rm_counter_interface(update,context):
+    context.user_data['user']=context.user_data.get('user',User())
     context.user_data['flags']=Flags()
     context.user_data['flags'].remove=True
     await update.message.reply_text('لطفا نام شمارنده ی مورد نظر را وارد کنید')
 
 async def rm_counter_identifier(update,context):
     name=update.message.text
-    if name in context.user_data['user'].counters:
+    if counter_name_validator(name,context.user_data['user'].counters):
         context.user_data['user'].remove_counter(name,asyncscheduler)
+        context.user_data['flags'].remove=False
         await update.message.reply_text('شمارنده با موفقیت حذف شد')
     else:
         await update.message.reply_text('شمارنده ای با این نام وجود ندارد')
 
+async def startup(app):
+    users_data=await app.persistence.get_user_data()
+    for userkey in users_data:
+        user=app.user_data[userkey]['user']
+        for counterkey in user.counters:
+            if not(None in vars(user.counters[counterkey]).values()):
+                user.build_counter(counterkey,asyncscheduler,app.bot)
+    commands=[
+        BotCommand('start','شروع ربات'),
+        BotCommand('help','نمایش همه ی دستور ها'),
+        BotCommand('add','اضافه کردن شمارنده'),
+        BotCommand('remove','حذف شمارنده'),
+        BotCommand('list','نمایش تمام شمارنده ها')
+    ]
+    await app.bot.set_my_commands(commands)
+    asyncscheduler.start()
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -171,9 +194,9 @@ asyncscheduler = AsyncIOScheduler(timezone=bottimezone)
 init_handler=CommandHandler('start',user_init)
 add_counter_handler=CommandHandler('add',add_counter_interface)
 remove_counter_handler=CommandHandler('remove',rm_counter_interface)
-manager_handler=MessageHandler(filters.TEXT & ~filters.COMMAND,manager)
+manager_handler=MessageHandler(filters.TEXT & ~filters.COMMAND,manager_interface)
 help_handler=CommandHandler('help',help)
-list_handler=CommandHandler('list',list_my_counters)
+list_handler=CommandHandler('list',list_counters)
 
 application.add_handler(init_handler)
 application.add_handler(add_counter_handler)
