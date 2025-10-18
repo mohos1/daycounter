@@ -49,8 +49,9 @@ async def startup(app):
     commands=[
         BotCommand('start','شروع ربات'),
         BotCommand('help','نمایش همه ی دستور ها'),
-        BotCommand('newcounter','اضافه کردن شمارنده'),
-        BotCommand('removecounter','حذف شمارنده')
+        BotCommand('add','اضافه کردن شمارنده'),
+        BotCommand('remove','حذف شمارنده'),
+        BotCommand('list','نمایش تمام شمارنده ها')
     ]
     await app.bot.set_my_commands(commands)
     asyncscheduler.start()
@@ -64,12 +65,21 @@ async def user_init(update,context):
 
 async def help(update,context):
     commands=await context.bot.get_my_commands()
-    maxlen=max([len(s.command) for s in commands])
     message='دستور های قابل دسترس\n\n'
     for c in commands:
-        message+=f'{c.command:<{maxlen}} - {c.description}\n'
+        message+=f'{c.command}  |  {c.description}\n'
     await update.message.reply_text(message)
 
+async def list_my_counters(update,context):
+    message='فهرست شمارنده ها \n\n'
+    userobj=context.user_data['user']
+    if userobj.counters.__len__()!=0:
+        for counterkey in userobj.counters:
+            counter=userobj.counters[counterkey]
+            message+=f'{counterkey}  |  {counter.sendtime[0]}:{counter.sendtime[1]}  |  {JalaliDate(counter.deadline)}\n'
+        await update.message.reply_text(message)
+    else:
+        await update.message.reply_text('شمارنده ای وجود ندارد')
 
 async def add_counter_interface(update,context):
     context.user_data['flags']=Flags()
@@ -159,15 +169,17 @@ bottimezone=datetime.timezone(datetime.timedelta(hours=3,minutes=30))
 asyncscheduler = AsyncIOScheduler(timezone=bottimezone)
 
 init_handler=CommandHandler('start',user_init)
-add_counter_handler=CommandHandler('newcounter',add_counter_interface)
-remove_counter_handler=CommandHandler('removecounter',rm_counter_interface)
+add_counter_handler=CommandHandler('add',add_counter_interface)
+remove_counter_handler=CommandHandler('remove',rm_counter_interface)
 manager_handler=MessageHandler(filters.TEXT & ~filters.COMMAND,manager)
 help_handler=CommandHandler('help',help)
+list_handler=CommandHandler('list',list_my_counters)
 
 application.add_handler(init_handler)
 application.add_handler(add_counter_handler)
 application.add_handler(manager_handler)
 application.add_handler(remove_counter_handler)
 application.add_handler(help_handler)
+application.add_handler(list_handler)
 
 application.run_polling()
