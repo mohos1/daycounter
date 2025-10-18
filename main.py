@@ -1,4 +1,4 @@
-from telegram import Bot
+from telegram import Bot,BotCommand,Update
 from telegram.ext import CommandHandler,ApplicationBuilder,filters,PicklePersistence,MessageHandler
 import datetime
 import os
@@ -41,12 +41,18 @@ async def send_daily_message(chatid,deadline,bot):
     await bot.send_message(chat_id=chatid, text=message)
 
 async def startup(app):
-    for userkey in app.user_data:
+    users_data=await app.persistence.get_user_data()
+    for userkey in users_data:
         user=app.user_data[userkey]['user']
         for counterkey in user.counters:
-            counter=user.counters[counterkey]
-            asyncscheduler.add_job(send_daily_message,'cron',args=[user.chatid,counter.deadline,bot],id=str(counter.id)
-                                ,hour=counter.sendtime[0],minute=counter.sendtime[1],end_date=counter.deadline)
+            user.build_counter(counterkey,asyncscheduler,app.bot)
+    commands=[
+        BotCommand('start','شروع ربات'),
+        BotCommand('help','نمایش همه ی دستور ها'),
+        BotCommand('newcounter','اضافه کردن شمارنده'),
+        BotCommand('removecounter','حذف شمارنده')
+    ]
+    await app.bot.set_my_commands(commands)
     asyncscheduler.start()
     print("Bot started. Waiting to send messages...")
 
@@ -55,6 +61,15 @@ async def user_init(update,context):
     context.user_data['user']=context.user_data.get('user',User(chatid))
     context.user_data['flags']=Flags()
     await context.bot.send_message(chat_id=chatid,text='سلام به روز شمار خوش آمدید')
+
+async def help(update,context):
+    commands=await context.bot.get_my_commands()
+    maxlen=max([len(s.command) for s in commands])
+    message='دستور های قابل دسترس\n\n'
+    for c in commands:
+        message+=f'{c.command:<{maxlen}} - {c.description}\n'
+    await update.message.reply_text(message)
+
 
 async def add_counter_interface(update,context):
     context.user_data['flags']=Flags()
@@ -105,10 +120,10 @@ async def get_counter_sendtime(update,context):
     except:
         await update.message.reply_text('لطفا  ساعتی معتبر وارد کنید')
         return -1
-    if 0<hour<24 and 0<minute<60:
+    if 0<=hour<24 and 0<=minute<60:
         context.user_data['user'].counters[context.user_data['flags'].cwo].sendtime=(hour,minute)
         context.user_data['flags'].sendtime=False
-        context.user_data['user'].build_counter(context.user_data['flags'].cwo,asyncscheduler,bot)
+        context.user_data['user'].build_counter(context.user_data['flags'].cwo,asyncscheduler,application.bot)
         context.user_data['flags'].cwo=None
         await update.message.reply_text('شمارنده با موفقیت اضافه شد')
     else:
@@ -138,8 +153,7 @@ BOT_TOKEN = str(os.getenv('BOT_TOKEN'))
 DATABASE_PATH=str(os.getenv('DATABASE_PATH'))
 
 persistence=PicklePersistence(DATABASE_PATH)
-application=ApplicationBuilder().token(BOT_TOKEN).persistence(persistence).post_init(startup).build()
-bot = Bot(token=BOT_TOKEN)
+application=ApplicationBuilder().token(BOT_TOKEN).persistence(persistence).post_init(startup).build()   
 
 bottimezone=datetime.timezone(datetime.timedelta(hours=3,minutes=30))
 asyncscheduler = AsyncIOScheduler(timezone=bottimezone)
@@ -148,10 +162,12 @@ init_handler=CommandHandler('start',user_init)
 add_counter_handler=CommandHandler('newcounter',add_counter_interface)
 remove_counter_handler=CommandHandler('removecounter',rm_counter_interface)
 manager_handler=MessageHandler(filters.TEXT & ~filters.COMMAND,manager)
+help_handler=CommandHandler('help',help)
 
 application.add_handler(init_handler)
 application.add_handler(add_counter_handler)
 application.add_handler(manager_handler)
 application.add_handler(remove_counter_handler)
+application.add_handler(help_handler)
 
 application.run_polling()
